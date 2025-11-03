@@ -1,0 +1,117 @@
+Agenda: Kubernetes Setup Using Kubeadm In AWS EC2 Ubuntu Servers
+==========================================================================
+
+Prerequisite:
+=============
+2 - Ubuntu Servers (Test setup)
+--------------------------------
+1 - Master Node  (4GB RAM, 2 Core) → t2.medium
+1 - Worker Node  (2GB RAM, 1 Core) → t2.small or t2.micro
+
+Note: Open the required ports in AWS Security Groups. For testing, you can allow All Traffic temporarily.
+
+==========================================================================
+=== COMMON STEPS FOR MASTER & WORKER NODES (Run on Both Servers) ===
+==========================================================================
+
+# Switch to root user
+sudo su -
+
+# Update the system and install dependencies
+apt-get update -y
+apt-get install -y apt-transport-https ca-certificates curl
+
+# Add Kubernetes apt repository and GPG key
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Update repositories
+apt-get update -y
+
+# Turn off Swap (Kubernetes requirement)
+swapoff -a
+sed -i '/ swap / s/^\(.*\)$/#/g' /etc/fstab
+
+# Install Docker as container runtime
+apt install docker.io -y
+usermod -aG docker ubuntu
+systemctl enable docker
+systemctl restart docker
+
+# Configure Docker to use systemd as cgroup driver
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"]
+}
+EOF
+
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl restart docker
+
+# Install Kubernetes components
+apt-get install -y kubelet kubeadm kubectl
+apt-mark hold kubelet kubeadm kubectl
+
+# Enable and start kubelet service
+systemctl enable kubelet
+systemctl start kubelet
+
+==========================================================================
+=== MASTER NODE SETUP (Run only on Master node) ===
+==========================================================================
+
+# Initialize Kubernetes Control Plane
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+# After successful init, follow the output instructions for kubeconfig setup
+
+# Setup kubeconfig for the current user (ubuntu)
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Verify cluster status
+kubectl get nodes
+kubectl get pods -A
+
+# Install Flannel CNI network plugin
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# Check status again
+kubectl get pods -A
+
+# Get join command for worker node
+kubeadm token create --print-join-command
+
+==========================================================================
+=== WORKER NODE SETUP (Run only on Worker node) ===
+==========================================================================
+
+# Run the kubeadm join command copied from the master output
+sudo kubeadm join <MASTER_IP>:6443 --token <TOKEN> --discovery-token-ca-cert-hash sha256:<HASH>
+
+==========================================================================
+=== VERIFY CLUSTER FROM MASTER NODE ===
+==========================================================================
+
+# Run on Master Node only
+kubectl get nodes
+kubectl get pods -A
+
+==========================================================================
+=== DEPLOY SAMPLE APPLICATION (Run on Master Node) ===
+==========================================================================
+
+# Deploy NGINX demo app
+kubectl create deployment nginx-demo --image=nginx --port=80
+
+# Expose the deployment via NodePort
+kubectl expose deployment nginx-demo --port=80 --type=NodePort
+
+# Get NodePort and test
+kubectl get services
+
+# Access the app using
+http://<MASTER_OR_WORKER_PUBLIC_IP>:<NODE_PORT>
